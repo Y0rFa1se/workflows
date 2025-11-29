@@ -1,0 +1,108 @@
+name: Build & Deploy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      ACTIONS_STEP_DEBUG: true
+      PY_BUILD_SCRIPT: build_page.py
+      MAIN_BUILD_DIRS: "main_build"
+      PAGES_BUILD_DIRS: "page_build"
+      HTML_BUILD_DIRS: "html_build"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: Y0rFa1se/Y0rFa1se.github.io
+          fetch-depth: 0
+          ref: md-pages
+          token: ${{ secrets.PAT }}
+
+      - name: Setup git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          pip install uv
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch all branches
+        run: |
+          git fetch --all --prune
+
+      - name: Create worktrees for branches
+        run: |
+          git worktree add ../wt-main     main
+          git worktree add ../wt-template template
+          git worktree add ../wt-gh-pages gh-pages
+
+      - name: Build pages with uv on md-pages
+        run: |
+          uv run "$PY_BUILD_SCRIPT"
+
+          mkdir -p ../artifacts
+          for d in $MAIN_BUILD_DIRS $PAGES_BUILD_DIRS; do
+            cp -R "$d" "../artifacts/$d"
+          done
+
+      - name: Update main branch with python build
+        working-directory: ../wt-main
+        run: |
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          cp -R "../artifacts/${MAIN_BUILD_DIRS}/." .
+
+          git add .
+          git commit -m "Update main from md-pages build" || echo "No changes to commit on main"
+          git push origin main
+
+      - name: Build template (npm)
+        working-directory: ../wt-template
+        run: |
+          mkdir -p src/contents
+          cp -R "../artifacts/${PAGES_BUILD_DIRS}/." src/
+
+          ls src
+          ls src/contents
+
+          npm install
+          npm run build
+
+          mkdir -p ../artifacts/${HTML_BUILD_DIRS}
+          shopt -s dotglob
+          cp -R build/* ../artifacts/${HTML_BUILD_DIRS}/
+          shopt -u dotglob
+
+      - name: Update gh-pages branch
+        working-directory: ../wt-gh-pages
+        run: |
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          shopt -s dotglob
+          cp -R ../artifacts/${HTML_BUILD_DIRS}/. .
+          shopt -u dotglob
+
+          git add .
+          git commit -m "Deploy to gh-pages" || echo "No changes to commit on gh-pages"
+          git push origin gh-pages
